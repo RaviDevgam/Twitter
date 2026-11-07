@@ -1,19 +1,25 @@
 """
-Pipeline: search X -> filter & rank -> Grok rewrite -> auto-post.
+Pipeline: fetch AI news (RSS) -> filter & rank -> GPT rewrite -> auto-post.
 
 Usage:
-    python pipeline.py                  # dry-run (shows what would be posted)
-    python pipeline.py --post           # actually post the top candidate
-    python pipeline.py --post --top 3   # post top 3 (rate-limited)
+    python pipeline.py                     # dry-run (shows what would be posted)
+    python pipeline.py --post              # actually post the top candidate
+    python pipeline.py --post --top 3      # post top 3 (spaced out)
+    python pipeline.py --post --approve    # ask y/n before posting each tweet
 """
 
 import argparse
 import hashlib
+import html
 import json
 import os
+import re
 import sys
 import time
-from urllib import error, parse, request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib import error, request
 
 try:
     from dotenv import load_dotenv
@@ -23,17 +29,15 @@ except ImportError:
 
 from post import post_tweet, refresh_access_token  # reuse posting logic
 
-BEARER_TOKEN = os.getenv("BEARER_TOKEN")
 USER_ACCESS_TOKEN = os.getenv("USER_ACCESS_TOKEN")
 REFRESH_TOKEN = os.getenv("REFRESH_TOKEN")
-XAI_API_KEY = os.getenv("XAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 TOPICS_PATH = os.path.join(ROOT, "topics.json")
 POSTED_PATH = os.path.join(ROOT, "posted.json")
 
-X_SEARCH_URL = "https://api.x.com/2/tweets/search/recent"
-XAI_URL = "https://api.x.ai/v1/chat/completions"
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 
 # ---------- helpers ----------
@@ -54,103 +58,127 @@ def http_json(method: str, url: str, *, headers: dict, body: dict | None = None)
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = request.Request(url=url, data=data, headers=headers, method=method)
     try:
-        with request.urlopen(req) as resp:
+        with request.urlopen(req, timeout=60) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except error.HTTPError as exc:
         msg = exc.read().decode("utf-8") if exc.fp else exc.reason
         raise RuntimeError(f"{exc.code} {exc.reason}: {msg}") from exc
 
 
-# ---------- 1. search X ----------
+# ---------- 1. fetch news ----------
 
-def search_x(query: str, max_results: int) -> list[dict]:
-    if not BEARER_TOKEN:
-        raise RuntimeError("BEARER_TOKEN missing in .env")
-    url = f"{X_SEARCH_URL}?{parse.urlencode({
-        'query': query,
-        'max_results': max(10, min(max_results, 100)),
-        'tweet.fields': 'created_at,public_metrics,lang,author_id',
-    })}"
-    result = http_json("GET", url, headers={"Authorization": f"Bearer {BEARER_TOKEN}"})
-    return result.get("data", []) or []
+def fetch_rss(url: str) -> list[dict]:
+    req = request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with request.urlopen(req, timeout=30) as resp:
+        root = ET.fromstring(resp.read())
+
+    items = []
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        source = (item.findtext("source") or "").strip()
+        # Google News titles end with " - Source"; strip it
+        if source and title.endswith(f" - {source}"):
+            title = title[: -len(f" - {source}")].strip()
+        desc = html.unescape(re.sub(r"<[^>]+>", " ", item.findtext("description") or ""))
+        desc = re.sub(r"\s+", " ", desc).strip()
+        pub = item.findtext("pubDate")
+        try:
+            published = parsedate_to_datetime(pub) if pub else None
+        except (TypeError, ValueError):
+            published = None
+        items.append({
+            "id": (item.findtext("guid") or item.findtext("link") or title).strip(),
+            "title": html.unescape(title),
+            "source": source,
+            "description": desc,
+            "link": (item.findtext("link") or "").strip(),
+            "published": published,
+        })
+    return items
 
 
 # ---------- 2. filter & rank ----------
 
-def score_post(post: dict, cfg: dict) -> int:
-    text = post.get("text", "").lower()
-    metrics = post.get("public_metrics", {})
+def score_item(item: dict, cfg: dict) -> float:
+    text = item["title"].lower()
 
-    # Hard excludes
+    # too-short headlines ("Introducing dots") give GPT nothing to work with
+    if len(text.split()) < cfg["min_title_words"]:
+        return -1
+
     for word in cfg["exclude_keywords"]:
         if word.lower() in text:
             return -1
 
-    # Min engagement
-    likes = metrics.get("like_count", 0)
-    retweets = metrics.get("retweet_count", 0)
-    if likes < cfg["min_likes"]:
-        return -1
+    age_hours = None
+    if item["published"]:
+        age_hours = (datetime.now(timezone.utc) - item["published"]).total_seconds() / 3600
+        if age_hours > cfg["max_age_hours"]:
+            return -1
 
-    # Boost score
-    boost = sum(2 for w in cfg["boost_keywords"] if w.lower() in text)
-    return likes + retweets * 2 + boost * 5
+    boost = sum(1 for w in cfg["boost_keywords"] if w.lower() in text)
+    source_bonus = 5 if item["source"] in cfg["priority_sources"] else 0
+    freshness = max(0.0, cfg["max_age_hours"] - age_hours) / cfg["max_age_hours"] * 5 if age_hours is not None else 0
+    return boost * 2 + source_bonus + freshness
 
 
 def gather_candidates(cfg: dict) -> list[dict]:
-    seen_ids = set()
+    seen = set()
     candidates = []
-    for query in cfg["search_queries"]:
-        print(f"  search: {query[:80]}...")
+    for url in cfg["rss_feeds"]:
+        print(f"  feed: {url[:80]}...")
         try:
-            posts = search_x(query, cfg["results_per_query"])
-        except RuntimeError as exc:
-            print(f"    ! search failed: {exc}")
+            items = fetch_rss(url)
+        except (error.URLError, ET.ParseError) as exc:
+            print(f"    ! feed failed: {exc}")
             continue
-        for p in posts:
-            if p["id"] in seen_ids:
+        print(f"    {len(items)} items")
+        for it in items:
+            # dedup by id and by near-identical headline (same story from many outlets)
+            title_key = re.sub(r"\W+", "", it["title"].lower())[:60]
+            if it["id"] in seen or title_key in seen:
                 continue
-            seen_ids.add(p["id"])
-            score = score_post(p, cfg)
+            seen.update({it["id"], title_key})
+            score = score_item(it, cfg)
             if score < 0:
                 continue
-            p["_score"] = score
-            candidates.append(p)
-        time.sleep(1)  # gentle on rate limit
-    candidates.sort(key=lambda p: p["_score"], reverse=True)
+            it["_score"] = score
+            candidates.append(it)
+    candidates.sort(key=lambda it: it["_score"], reverse=True)
     return candidates
 
 
-# ---------- 3. Grok rewrite ----------
+# ---------- 3. GPT rewrite ----------
 
-def rewrite_with_grok(source_text: str, cfg: dict) -> str:
-    if not XAI_API_KEY:
-        raise RuntimeError("XAI_API_KEY missing in .env")
+def rewrite_with_gpt(item: dict, cfg: dict) -> str:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY missing in environment/.env")
 
     user_msg = (
-        f"Source post:\n\"\"\"\n{source_text}\n\"\"\"\n\n"
-        f"Stance: {cfg['stance']}\n"
+        f"Headline: {item['title']}\n"
+        f"Source: {item['source'] or 'unknown'}\n"
+        f"Published: {item['published'].strftime('%Y-%m-%d') if item['published'] else 'unknown'}\n\n"
         f"Allowed hashtags: {' '.join(cfg['hashtags'])}\n"
         f"Max length: {cfg['max_post_length']} characters.\n\n"
-        f"Write ONE tweet commenting on the source post. Output only the tweet."
+        f"Write ONE tweet about this news. Output only the tweet."
     )
     body = {
-        "model": cfg["grok_model"],
+        "model": cfg["openai_model"],
         "messages": [
-            {"role": "system", "content": cfg["grok_system_prompt"]},
+            {"role": "system", "content": cfg["system_prompt"]},
             {"role": "user", "content": user_msg},
         ],
-        "temperature": 0.7,
     }
-    result = http_json("POST", XAI_URL, headers={
-        "Authorization": f"Bearer {XAI_API_KEY}",
+    result = http_json("POST", OPENAI_URL, headers={
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }, body=body)
     text = result["choices"][0]["message"]["content"].strip()
-    # strip wrapping quotes if Grok adds them
+    # strip wrapping quotes if the model adds them
     if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
         text = text[1:-1].strip()
-    # enforce length
+    # links cost $0.20/post on X API — never post them
+    text = re.sub(r"\s*https?://\S+", "", text).strip()
     if len(text) > cfg["max_post_length"]:
         text = text[: cfg["max_post_length"] - 1].rstrip() + "…"
     return text
@@ -158,9 +186,8 @@ def rewrite_with_grok(source_text: str, cfg: dict) -> str:
 
 # ---------- 4. dedup ----------
 
-def dedup_key(post: dict) -> str:
-    # Use source tweet id as the dedup key
-    return hashlib.sha1(post["id"].encode()).hexdigest()
+def dedup_key(item: dict) -> str:
+    return hashlib.sha1(item["id"].encode()).hexdigest()
 
 
 # ---------- 5. main ----------
@@ -169,6 +196,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--post", action="store_true", help="Actually post (otherwise dry-run)")
     parser.add_argument("--top", type=int, default=1, help="Number of tweets to post")
+    parser.add_argument("--approve", action="store_true", help="Ask y/n before posting each tweet")
     args = parser.parse_args()
 
     cfg = load_json(TOPICS_PATH, None)
@@ -178,7 +206,7 @@ def main() -> None:
     posted = load_json(POSTED_PATH, {"ids": []})
     posted_ids = set(posted["ids"])
 
-    print("Step 1: searching X...")
+    print("Step 1: fetching news...")
     candidates = gather_candidates(cfg)
     print(f"  -> {len(candidates)} candidates after filter")
 
@@ -188,21 +216,24 @@ def main() -> None:
         sys.exit("No fresh candidates. Try again later or relax filters.")
 
     selected = fresh[: args.top]
-    print(f"\nStep 2: rewriting top {len(selected)} with Grok ({cfg['grok_model']})...\n")
+    print(f"\nStep 2: rewriting top {len(selected)} with {cfg['openai_model']}...\n")
 
     for i, src in enumerate(selected, 1):
-        metrics = src.get("public_metrics", {})
-        print(f"=== Candidate {i}/{len(selected)}  score={src['_score']}  likes={metrics.get('like_count')} ===")
-        print(f"SOURCE: {src['text']}")
+        print(f"=== Candidate {i}/{len(selected)}  score={src['_score']:.1f}  source={src['source']} ===")
+        print(f"HEADLINE: {src['title']}")
         try:
-            tweet = rewrite_with_grok(src["text"], cfg)
+            tweet = rewrite_with_gpt(src, cfg)
         except RuntimeError as exc:
-            print(f"! Grok failed: {exc}")
+            print(f"! GPT failed: {exc}")
             continue
         print(f"REWRITE ({len(tweet)} chars): {tweet}\n")
 
         if not args.post:
             print("(dry-run, not posting)\n")
+            continue
+
+        if args.approve and input("Post this? [y/N]: ").strip().lower() != "y":
+            print("skipped\n")
             continue
 
         access_token = USER_ACCESS_TOKEN

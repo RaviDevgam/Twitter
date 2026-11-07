@@ -1,39 +1,37 @@
 {
-  "_comment": "Right-wing nationalist Indian commentary. Targets ideologies & behaviors, not just names — so it auto-catches new actors.",
+  "_comment": "AI / GenAI / ML / LLM news account. Source: Google News AI topic RSS -> GPT rewrite -> post.",
 
-  "stance": "Indian right-wing nationalist commentator. Civilizational pride in Bharat, Hindu, Sanatan dharma. Pro-sovereignty, pro-military, pro-economic reform, pro-meritocracy. Anti-appeasement, anti-dynasty, anti-urban-naxal, anti-breaking-India narrative. Calls out leftist/liberal hypocrisy, selective outrage, foreign-funded NGOs, biased mainstream media, judicial overreach, vote-bank politics, and any politician — TMC/Congress/AAP/DMK/SP/Communist — who puts ideology, family, or vote bank above the nation. Sharp, witty, factual. Never abusive, never communal slurs, never calls for violence.",
-
-  "search_queries": [
-    "(Congress OR TMC OR AAP OR DMK OR Communist) (appeasement OR scam OR corruption OR riot OR hypocrisy OR lies OR u-turn OR exposed) India lang:en -is:retweet -is:reply",
-
-    "(Hindu OR Sanatan OR temple OR waqf OR conversion OR \"love jihad\") (attack OR vandal OR demolition OR insult OR appeasement) India lang:en -is:retweet -is:reply",
-
-    "(\"urban naxal\" OR \"breaking India\" OR \"anti-national\" OR \"vote bank\" OR \"foreign funded\" OR woke OR propaganda) India lang:en -is:retweet -is:reply",
-
-    "(Pakistan OR Khalistan OR terror OR jihad OR infiltrator OR China) India lang:en -is:retweet -is:reply"
+  "rss_feeds": [
+    "https://news.google.com/rss/topics/CAAqIAgKIhpDQkFTRFFvSEwyMHZNRzFyZWhJQ1pXNG9BQVAB?hl=en-US&gl=US&ceid=US%3Aen"
   ],
 
+  "max_age_hours": 24,
+
+  "min_title_words": 5,
+
   "boost_keywords": [
-    "exposed", "caught", "lies", "hypocrisy", "u-turn", "flip-flop",
-    "appeasement", "vote bank", "scam", "corruption", "riot", "violence",
-    "attack", "vandalism", "demolition", "loot", "dynasty", "nepotism",
-    "anti-national", "anti-hindu", "urban naxal", "breaking india",
-    "foreign funded", "toolkit", "soros", "propaganda", "biased",
-    "ED", "CBI", "NIA", "raid", "arrested", "chargesheet"
+    "launch", "launches", "release", "releases", "introducing", "announces", "open-source", "open source",
+    "model", "LLM", "GPT", "Claude", "Gemini", "Llama", "Grok", "Mistral", "DeepSeek", "Qwen",
+    "agent", "agents", "benchmark", "reasoning", "breakthrough", "research", "paper",
+    "OpenAI", "Anthropic", "Google DeepMind", "Meta", "Nvidia", "Microsoft", "Hugging Face",
+    "funding", "raises", "acquires", "regulation", "AI Act", "chip", "GPU"
+  ],
+
+  "priority_sources": [
+    "OpenAI", "Anthropic", "Google DeepMind", "Google Blog", "Meta AI", "Hugging Face", "NVIDIA Blog",
+    "TechCrunch", "The Verge", "Reuters", "Bloomberg", "Ars Technica", "WIRED", "MIT Technology Review", "VentureBeat"
   ],
 
   "exclude_keywords": [
-    "cricket", "IPL", "bollywood", "movie", "film", "trailer", "song",
-    "giveaway", "follow back", "DM me", "click link", "subscribe",
-    "porn", "OnlyFans", "crypto pump", "airdrop", "NFT", "casino"
+    "stock to buy", "stocks to buy", "price prediction", "horoscope", "sponsored", "deal alert", "coupon",
+    "best buy", "% off", "penny stock"
   ],
 
-  "min_likes": 10,
-  "max_age_hours": 24,
-  "results_per_query": 5,
-  "max_post_length": 270,
-  "hashtags": ["#India", "#Bharat", "#IndianPolitics", "#HinduRights", "#Nationalism"],
+  "hashtags": ["#AI", "#GenAI", "#LLM", "#MachineLearning", "#OpenAI", "#AIAgents", "#TechNews"],
 
-  "grok_model": "grok-4-fast",
-  "grok_system_prompt": "You are a sharp, witty, right-wing Indian nationalist political commentator writing tweets. Voice: confident, civilizationally proud, sometimes sarcastic, always factual. Worldview: pro-Bharat, pro-Hindu, pro-Sanatan, pro-sovereignty, pro-meritocracy. Anti-appeasement, anti-dynasty, anti-urban-naxal, anti-breaking-India, anti-foreign-funded-NGO, anti-biased-MSM. STRICT RULES: (1) Comment ONLY on what the source post actually says — do NOT invent facts, names, numbers, or quotes. (2) NO communal slurs, NO caste abuse, NO calls for violence, NO targeting individuals by religion. Attack ideology and actions, not identity. (3) <=270 characters total. (4) Pick 1-2 most relevant hashtags from the provided list. (5) Output ONLY the tweet text — no quotes, no preface, no explanation."
+  "max_post_length": 270,
+
+  "openai_model": "gpt-6-luna",
+
+  "system_prompt": "You write tweets for a popular AI/GenAI/ML news account followed by developers, founders and tech enthusiasts. Voice: clear, sharp, insightful, slightly conversational — like a smart engineer who reads everything. Each tweet should (a) state the news in plain words and (b) add ONE short takeaway: why it matters, who it affects, or what to watch next. STRICT RULES: (1) Use ONLY facts present in the headline/source given — do NOT invent numbers, names, features, quotes or dates. If unsure, stay general. (2) No links, no URLs. (3) No clickbait like 'BREAKING' or 'You won't believe'. No emoji spam (max 1 emoji, optional). (4) <=270 characters total. (5) Use 1-2 relevant hashtags from the provided list, at the end. (6) Output ONLY the tweet text — no quotes, no preface, no explanation."
 }
